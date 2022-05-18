@@ -1,0 +1,400 @@
+---
+title: "AMS 580 Project: Time Series"
+output: pdf_document
+---
+
+```{r}
+# Load packages and data
+library(keras) # for deep learning
+library(tidyverse) # general utility functions
+library(caret) # machine learning utility functions
+library(ggplot2)
+library(dplyr)
+library(tensorflow)
+library(tseries)
+library(forecast)
+```
+
+```{r}
+# read data
+traindata <- read_csv("train.csv")[, c("date", "sales")]
+testdata <- read_csv("test.csv")[, c("date", "onpromotion")]
+str(traindata)
+str(testdata)
+sapply(traindata, function(x) sum(is.na(x)))
+sapply(testdata, function(x) sum(is.na(x)))
+```
+
+```{r}
+# processing data
+traindata = aggregate.data.frame(traindata$sales, by = list(date = traindata$date), FUN = sum)
+colnames(traindata)[2] <- "sales"
+traindata$ts_preds <- NA
+traindata$rnn_preds <- traindata$sales
+traindata$lstm_preds <- traindata$sales
+traindata$gru_preds <- traindata$sales
+testdata = aggregate.data.frame(testdata$onpromotion, by = list(date = testdata$date), FUN = sum)
+testdata = subset(testdata, select = -c(x))
+str(traindata)
+str(testdata)
+```
+
+```{r}
+# Visualization
+knitr::kable(head(traindata))
+ggplot(traindata, aes(x=date, y = sales)) + geom_line()
+```
+
+```{r}
+# ts object to analyze time series. ts() is often used for monthly, quarterly or yearly, but is still applicable to daily data.
+ots = ts(traindata[["sales"]], start=min(traindata[["date"]]),
+         end=max(traindata[["date"]]), frequency=1)
+
+# base R plotting with a smooth spline. Try if it can be plotted using ggplot2.
+par(mar=c(4,4,4,2))  # margins: bottom, left, top, right
+plot(
+  ots, col=rgb(0,0,0,0.2), 
+  xlab="Time", ylab="Sales"
+)
+lines(
+  predict(
+    smooth.spline(ots~time(ots), spar=0.45)
+  ), 
+  lwd=3, col="darkgreen"
+)
+```
+
+```{r}
+par(mar=c(4,4,4,2))  # margins: bottom, left, top, right
+acf(ots, main='ACF for sales')  
+```
+```{r}
+pacf(ots, main='PACF for sales') 
+```
+```{r}
+adf.test(ots)
+```
+```{r}
+fit = 
+  auto.arima(
+    ots, 
+    seasonal=FALSE, 
+    test="adf",
+    ic="bic",  # I changed to BIC bcs it penalizes model complexity more than AIC and AICc
+    lambda=NULL,
+    stepwise=FALSE,
+    approximation=FALSE,
+    max.p=3
+  )
+summary(fit)
+```
+
+```{r}
+# ts object of the future 16 days prediction
+ts_prediction <- forecast(fit, 16)$mean
+
+ts_data = traindata[c((nrow(traindata) - 15):nrow(traindata)), c(1,2,3)]
+ts_data_preds = data.frame(date = testdata$date, sales = NA, ts_preds = ts_prediction)
+ts_data <- rbind(ts_data, ts_data_preds)
+
+# Plot
+ggplot(data = ts_data, aes(x = date)) +
+  geom_line(aes(y = sales, color = 'real sales')) +
+  geom_line(aes(y = ts_preds, color = 'ts_preds'))
+
+# Plot all data
+ts_totaldata <- rbind(traindata[,c(1,2,3)], ts_data_preds)
+ggplot(data = ts_totaldata, aes(x = date)) +
+  geom_line(aes(y = sales, color = 'real sales')) +
+  geom_line(aes(y = ts_preds, color = 'ts_preds'))
+```
+
+
+```{r}
+# Normalization
+meansale = mean(traindata$sales)
+sdsale = sd(traindata$sales)
+traindata$sales_norm = scale(traindata$sales)
+model_data = matrix(traindata$sales_norm)
+knitr::kable(tail(model_data,5))
+```
+
+```{r}
+# Split traindata to train and test
+# traindata time is from 2013-1-1 to 2017-8-15
+# testdata time is from 2017-8-16 to 2017-8-31
+# Each has 54 * 33 = 1782 samples
+test_size = 2 * nrow(testdata)
+train_data = head(model_data,-test_size)
+test_data = tail(model_data, test_size)
+cat(dim(train_data)[1], 'days are divided into the training set and', dim(test_data)[1], 'days are divided into the testing set.')
+```
+
+
+```{r}
+prediction = nrow(testdata)
+lag = prediction
+# Training X
+train_X = t(sapply(
+    1:(length(train_data) - lag - prediction + 1),
+    function(x) train_data[x:(x + lag - 1), 1]
+  ))
+# now we transform it into 3D form
+train_X <- array(
+    data = as.numeric(unlist(train_X)),
+    dim = c(
+        nrow(train_X),
+        lag,
+        1
+    )
+)
+# Training y
+train_y <- t(sapply(
+    (1 + lag):(length(train_data) - prediction + 1),
+    function(x) train_data[x:(x + prediction - 1)]
+))
+train_y <- array(
+    data = as.numeric(unlist(train_y)),
+    dim = c(
+        nrow(train_y),
+        prediction,
+        1
+    )
+)
+# Testing X
+test_X = t(sapply(
+    1:(length(test_data) - lag - prediction + 1),
+    function(x) test_data[x:(x + lag - 1), 1]
+  ))
+test_X <- array(
+    data = as.numeric(unlist(test_X)),
+    dim = c(
+        nrow(test_X),
+        lag,
+        1
+    )
+)
+# Testing y
+test_y <- t(sapply(
+    (1 + lag):(length(test_data) - prediction + 1),
+    function(x) test_data[x:(x + prediction - 1)]
+))
+test_y <- array(
+    data = as.numeric(unlist(test_y)),
+    dim = c(
+        nrow(test_y),
+        prediction,
+        1
+    )
+)
+dim(train_X)
+dim(train_y)
+dim(test_X)
+dim(test_y)
+```
+
+RNN -- Recurrent Neural Network
+```{r}
+set_random_seed(123)
+rnn_model <- keras_model_sequential()
+rnn_model %>%
+  layer_simple_rnn(units = 200, input_shape = dim(train_X)[2:3])
+rnn_model %>%
+  layer_dense(units = dim(test_y)[2])
+
+summary(rnn_model)
+rnn_model %>% compile(loss = 'mse',
+                  optimizer = 'adam',
+                  metrics = c('mse'))
+rnn_history <- rnn_model %>% fit(
+  x = train_X,
+  y = train_y,
+  batch_size =16,
+  epochs = 50,
+  validation_split = 0.1,
+  shuffle = FALSE
+)
+
+rnn_preds_norm = t(predict(rnn_model, test_X))
+rnn_preds_complete = cbind(rnn_preds_norm, tail(traindata, prediction))
+rnn_preds = rnn_preds_complete$rnn_preds_norm * sdsale + meansale
+rnn_predictions = data.frame(rnn_predictions = rnn_preds, true = rnn_preds_complete$sales, date = rnn_preds_complete$date)
+# Test RMSE
+(rnn_RMSE = RMSE(rnn_predictions$true, rnn_predictions$rnn_predictions))
+
+# Plot
+ggplot(data = rnn_predictions, aes(x = date)) +
+  geom_line(aes(y = rnn_predictions, color = 'rnn_predictions')) +
+  geom_line(aes(y = true, color = 'true'))
+
+# Plot All data
+traindata[c((nrow(traindata) - nrow(testdata) + 1):nrow(traindata)), c(4)] <- rnn_preds
+ggplot(data = traindata, aes(x = date)) +
+  geom_line(aes(y = rnn_preds, color = 'rnn_preds')) +
+  geom_line(aes(y = sales, color = 'real sales'))
+
+```
+
+LSTM -- Long-Short Term Memory
+```{r}
+set_random_seed(123)
+lstm_model <- keras_model_sequential()
+lstm_model %>%
+  layer_lstm(units = 200, input_shape = dim(train_X)[2:3])
+lstm_model %>%
+  layer_dense(units = dim(test_y)[2])
+
+summary(lstm_model)
+lstm_model %>% compile(loss = 'mse',
+                  optimizer = 'adam',
+                  metrics = c('mse'))
+lstm_history <- lstm_model %>% fit(
+  x = train_X,
+  y = train_y,
+  batch_size =16,
+  epochs = 50,
+  validation_split = 0.1,
+  shuffle = FALSE
+)
+
+lstm_preds_norm = t(predict(lstm_model, test_X))
+lstm_preds_complete = cbind(lstm_preds_norm, tail(traindata, prediction))
+lstm_preds = lstm_preds_complete$lstm_preds_norm * sdsale + meansale
+lstm_predictions = data.frame(lstm_predictions = lstm_preds, true = lstm_preds_complete$sales, date = lstm_preds_complete$date)
+# Test RMSE
+(lstm_RMSE = RMSE(lstm_predictions$true, lstm_predictions$lstm_predictions))
+
+# Plot
+ggplot(data = lstm_predictions, aes(x = date)) +
+  geom_line(aes(y = lstm_predictions, color = 'lstm_predictions')) +
+  geom_line(aes(y = true, color = 'true'))
+
+# Plot All data
+traindata[c((nrow(traindata) - nrow(testdata) + 1):nrow(traindata)), c(5)] <- lstm_preds
+ggplot(data = traindata, aes(x = date)) +
+  geom_line(aes(y = lstm_preds, color = 'lstm_preds')) +
+  geom_line(aes(y = sales, color = 'real sales'))
+
+```
+
+GRU -- Gated Recurrent Units
+```{r}
+set_random_seed(123)
+gru_model <- keras_model_sequential()
+gru_model %>%
+  layer_gru(units = 200, input_shape = dim(train_X)[2:3])
+gru_model %>%
+  layer_dense(units = dim(test_y)[2])
+
+summary(gru_model)
+gru_model %>% compile(loss = 'mse',
+                  optimizer = 'adam',
+                  metrics = c('mse'))
+gru_history <- gru_model %>% fit(
+  x = train_X,
+  y = train_y,
+  batch_size =16,
+  epochs = 50,
+  validation_split = 0.1,
+  shuffle = FALSE
+)
+
+gru_preds_norm = t(predict(gru_model, test_X))
+gru_preds_complete = cbind(gru_preds_norm, tail(traindata, prediction))
+gru_preds = gru_preds_complete$gru_preds_norm * sdsale + meansale
+gru_predictions = data.frame(gru_predictions = gru_preds, true = gru_preds_complete$sales, date = gru_preds_complete$date)
+# Test RMSE
+(gru_RMSE = RMSE(gru_predictions$true, gru_predictions$gru_predictions))
+
+# Plot
+ggplot(data = gru_predictions, aes(x = date)) +
+  geom_line(aes(y = gru_predictions, color = 'gru_predictions')) +
+  geom_line(aes(y = true, color = 'true'))
+
+# Plot All data
+traindata[c((nrow(traindata) - nrow(testdata) + 1):nrow(traindata)), c(6)] <- gru_preds
+ggplot(data = traindata, aes(x = date)) +
+  geom_line(aes(y = gru_preds, color = 'gru_preds')) +
+  geom_line(aes(y = sales, color = 'real sales'))
+```
+
+Compare Models
+```{r}
+RMSEs <- data.frame(rnn_RMSE,lstm_RMSE, gru_RMSE)
+knitr::kable(head(RMSEs))
+cat('The minimum RMSE is', min(RMSEs), 'from RNN model.')
+
+# Plot
+gru_predictions$lstm_predictions <- lstm_predictions$lstm_predictions
+gru_predictions$rnn_predictions <- rnn_predictions$rnn_predictions
+ggplot(data = gru_predictions, aes(x = date)) +
+  geom_line(aes(y = gru_predictions, color = 'gru_predictions')) +
+  geom_line(aes(y = lstm_predictions, color = 'lstm_predictions')) +
+  geom_line(aes(y = rnn_predictions, color = 'rnn_predictions')) +
+  geom_line(aes(y = true, color = 'true'))
+
+# Plot All data
+ggplot(data = traindata, aes(x = date)) +
+  geom_line(aes(y = gru_preds, color = 'gru_preds')) +
+  geom_line(aes(y = lstm_preds, color = 'lstm_preds')) +
+  geom_line(aes(y = rnn_preds, color = 'rnn_preds')) +
+  geom_line(aes(y = sales, color = 'real sales'))
+```
+
+Predict Test Data
+```{r}
+# Test data
+testdata$sales <- NA
+testdata$sales_norm <- NA
+testdata$rnn_preds <- NA
+testdata$lstm_preds <- NA
+testdata$gru_preds <- NA
+testdata$ts_preds <- NA
+testdata <- rbind(traindata[c((nrow(traindata) - nrow(testdata) + 1):nrow(traindata)), ], testdata)
+testdata$rnn_preds = testdata$lstm_preds = testdata$gru_preds = testdata$ts_preds = testdata$sales
+model_data_x = matrix(traindata[c((nrow(traindata) - 16):nrow(traindata)), c(7)][-1])
+# Test data X
+test_data_X = t(sapply(
+    1:(32 - lag - prediction + 1),
+    function(x) model_data_x[x:(x + lag - 1), 1]
+  ))
+test_data_X <- array(
+    data = as.numeric(unlist(test_data_X)),
+    dim = c(
+        nrow(test_data_X),
+        lag,
+        1
+    )
+)
+dim(test_data_X)
+rnn_predstest_norm = t(predict(rnn_model, test_data_X))
+rnn_predstest = rnn_predstest_norm * sdsale + meansale
+lstm_predstest_norm = t(predict(lstm_model, test_data_X))
+lstm_predstest = lstm_predstest_norm * sdsale + meansale
+gru_predstest_norm = t(predict(gru_model, test_data_X))
+gru_predstest = gru_predstest_norm * sdsale + meansale
+testdata$rnn_preds[17:32] <- rnn_predstest
+testdata$lstm_preds[17:32] <- lstm_predstest
+testdata$gru_preds[17:32] <- gru_predstest
+testdata$ts_preds[17:32] <- ts_data_preds$ts_preds
+```
+
+Compare the predictions and Visualization
+```{r}
+ggplot(data = testdata, aes(x = date)) +
+  geom_line(aes(y = gru_preds, color = 'gru_predictions')) +
+  geom_line(aes(y = lstm_preds, color = 'lstm_predictions')) +
+  geom_line(aes(y = ts_preds, color = 'ts_predictions')) +
+  geom_line(aes(y = rnn_preds, color = 'rnn_predictions'))
+
+totaldata <- subset(traindata, select = c(1))
+totaldata$rnn_preds = totaldata$lstm_preds = totaldata$gru_preds = totaldata$ts_preds = traindata$sales
+testdata <-subset(testdata, select = c("date","rnn_preds","lstm_preds","gru_preds","ts_preds"))
+testdata <- testdata[c(17:32),]
+totaldata <- rbind(totaldata, testdata)
+ggplot(data = totaldata, aes(x = date)) +
+  geom_line(aes(y = gru_preds, color = 'gru_predictions')) +
+  geom_line(aes(y = lstm_preds, color = 'lstm_predictions')) +
+  geom_line(aes(y = ts_preds, color = 'ts_predictions')) +
+  geom_line(aes(y = rnn_preds, color = 'rnn_predictions'))
+```
