@@ -1,4 +1,4 @@
-# Time-Series Forecasting of Store Sales
+# Time Series Forecasting of Store Sales
 
 A Spring 2022 AMS 580 group project comparing ARIMA, simple recurrent neural networks, long short-term memory networks, and gated recurrent units for aggregate grocery store sales forecasting.
 
